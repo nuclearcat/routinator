@@ -1,0 +1,128 @@
+name: Release DEB Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag for the release (e.g., v0.15.1)'
+        required: true
+        type: string
+
+jobs:
+  build-deb:
+    name: Build ${{ matrix.distro }} package
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - distro: debian13
+            image: debian:trixie
+            variant: debian-trixie
+          - distro: ubuntu2404
+            image: ubuntu:noble
+            variant: ""
+    container:
+      image: ${{ matrix.image }}
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl build-essential pkg-config libssl-dev rsync git
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.82
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Generate changelog for cargo-deb
+        run: |
+          mkdir -p target/debian
+          DATE=$(date -R)
+          cat > target/debian/changelog << CHANGELOG
+          routinator (${{ inputs.version }}~nmcs) stable; urgency=medium
+
+            * Release ${{ inputs.version }} (nmcs fork build)
+
+           -- nmcs <nmcs@example.com>  ${DATE}
+          CHANGELOG
+
+      - name: Build release binary
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release --locked
+
+      - name: Build DEB package
+        run: |
+          . "$HOME/.cargo/env"
+          if [ -n "${{ matrix.variant }}" ]; then
+            cargo deb --no-build --variant ${{ matrix.variant }}
+          else
+            cargo deb --no-build
+          fi
+
+      - name: Get package filename
+        id: package
+        run: |
+          PKG_FILE=$(ls target/debian/*.deb | head -1)
+          PKG_NAME=$(basename "$PKG_FILE")
+          # Rename to include distro identifier and fork suffix (nmcs)
+          NEW_NAME="${PKG_NAME%.deb}_${{ matrix.distro }}_nmcs.deb"
+          mv "$PKG_FILE" "target/debian/$NEW_NAME"
+          echo "filename=$NEW_NAME" >> $GITHUB_OUTPUT
+          echo "path=target/debian/$NEW_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: routinator-${{ matrix.distro }}
+          path: ${{ steps.package.outputs.path }}
+
+  create-release:
+    name: Create Release
+    needs: build-deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: List packages
+        run: ls -la packages/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}-nmcs
+          name: Release ${{ inputs.version }} (nmcs fork)
+          draft: true
+          files: packages/*.deb
+          body: |
+            ## DEB Packages (nmcs fork)
+
+            > **Note:** These packages are built from a fork and are NOT official NLnet Labs releases.
+            > For official releases, please visit [NLnet Labs](https://github.com/NLnetLabs/routinator).
+
+            This release includes DEB packages for:
+            - Debian 13 (Trixie)
+            - Ubuntu 24.04 (Noble)
+
+            ### Installation
+
+            ```bash
+            sudo dpkg -i routinator_*_nmcs.deb
+            sudo apt-get install -f  # Install dependencies if needed
+            ```
