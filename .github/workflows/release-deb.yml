@@ -43,6 +43,11 @@ jobs:
           . "$HOME/.cargo/env"
           cargo install cargo-deb
 
+      - name: Patch Cargo.toml for cargo-deb compatibility
+        run: |
+          # Remove usr-merge option which is not supported by standard cargo-deb
+          sed -i 's/, usr-merge = false//g' Cargo.toml
+
       - name: Generate changelog for cargo-deb
         run: |
           mkdir -p target/debian
